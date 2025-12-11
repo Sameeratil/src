@@ -421,7 +421,7 @@ const refreshBtn = document.getElementById('btn-refresh');
 const retryBtn = document.getElementById('btn-retry');
 
 // State management
-let currentAbort;
+let globalLoadController = null; // Changed: One controller for the whole page load
 let teams = [];
 let roles = [];
 let members = [];
@@ -434,22 +434,6 @@ document.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
   }
 });
-
-// Abortable fetch function
-async function abortableFetch(fetchFn) {
-  if (currentAbort) currentAbort.abort();
-  currentAbort = new AbortController();
-  const signal = currentAbort.signal;
-
-  try {
-    const result = await fetchFn();
-    if (signal.aborted) return null;
-    return result;
-  } catch (error) {
-    if (signal.aborted) return null;
-    throw error;
-  }
-}
 
 // Concurrency limiter
 function createSemaphore(max = 2) {
@@ -468,57 +452,43 @@ function createSemaphore(max = 2) {
   return (fn) => new Promise((res, rej) => { queue.push({ fn, res, rej }); next(); });
 }
 
-const withLimit = createSemaphore(2);
+const withLimit = createSemaphore(3); // Increased limit slightly
 
 // Yield to prevent main thread blocking
 const yieldToFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 
-// Load teams data
+// --- SIMPLIFIED DATA LOADERS (Removed abortableFetch wrapper) ---
+
 async function funLoadTeams() {
-  return abortableFetch(async () => {
-    const teamsQuery = query(collection(db, 'teams'), orderBy('name'), limit(50));
-    const snapshot = await getDocs(teamsQuery);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  });
+  const teamsQuery = query(collection(db, 'teams'), orderBy('name'), limit(50));
+  const snapshot = await getDocs(teamsQuery);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
-// Load roles data
 async function funLoadRoles() {
-  return abortableFetch(async () => {
-    const rolesQuery = query(collection(db, 'roles'), orderBy('name'), limit(100));
-    const snapshot = await getDocs(rolesQuery);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  });
+  const rolesQuery = query(collection(db, 'roles'), orderBy('name'), limit(100));
+  const snapshot = await getDocs(rolesQuery);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
-// Load members data
 async function funLoadMembers() {
-  return abortableFetch(async () => {
-    const membersQuery = query(collection(db, 'members'), orderBy('name'), limit(200));
-    const snapshot = await getDocs(membersQuery);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  });
+  const membersQuery = query(collection(db, 'members'), orderBy('name'), limit(200));
+  const snapshot = await getDocs(membersQuery);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
-// Load team members relationships
 async function funLoadTeamMembers() {
-  return abortableFetch(async () => {
-    const teamMembersQuery = query(collection(db, 'teamMembers'), limit(500));
-    const snapshot = await getDocs(teamMembersQuery);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  });
+  const teamMembersQuery = query(collection(db, 'teamMembers'), limit(500));
+  const snapshot = await getDocs(teamMembersQuery);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
-// Load member roles relationships
 async function funLoadMemberRoles() {
-  return abortableFetch(async () => {
-    const memberRolesQuery = query(collection(db, 'memberRoles'), limit(500));
-    const snapshot = await getDocs(memberRolesQuery);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  });
+  const memberRolesQuery = query(collection(db, 'memberRoles'), limit(500));
+  const snapshot = await getDocs(memberRolesQuery);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
-// Get statistics counts
 async function funLoadCounts() {
   const results = await Promise.all([
     withLimit(() => getCountFromServer(collection(db, 'teams'))),
@@ -533,7 +503,7 @@ async function funLoadCounts() {
   };
 }
 
-// Data processing in chunks to avoid blocking main thread
+// Data processing in chunks
 async function funProcessTeamData() {
   const processedTeams = [];
   
@@ -574,16 +544,13 @@ async function funProcessTeamData() {
       roles: rolesWithMembers
     });
     
-    // Yield every 5 teams to prevent blocking
-    if (i % 5 === 0) {
-      await yieldToFrame();
-    }
+    if (i % 5 === 0) await yieldToFrame();
   }
   
   return processedTeams;
 }
 
-// Render team card
+// Render functions remain the same
 function funRenderTeamCard(team) {
   const hasRoles = team.roles && team.roles.length > 0;
   const totalMembers = hasRoles ? team.roles.reduce((sum, role) => sum + (role.members?.length || 0), 0) : 0;
@@ -618,7 +585,6 @@ function funRenderTeamCard(team) {
   `;
 }
 
-// Render role card
 function funRenderRoleCard(role) {
   const hasMembers = role.members && role.members.length > 0;
 
@@ -645,14 +611,13 @@ function funRenderRoleCard(role) {
   `;
 }
 
-// Update statistics display
+// Stats & UI Helpers
 function funUpdateStats(counts) {
   teamCountEl.textContent = counts.teamCount?.toLocaleString() || '0';
   roleCountEl.textContent = counts.roleCount?.toLocaleString() || '0';
   memberCountEl.textContent = counts.memberCount?.toLocaleString() || '0';
 }
 
-// Show loading state
 function funShowLoading() {
   loadingSkeleton.classList.remove('hidden');
   teamsContent.classList.add('hidden');
@@ -660,7 +625,6 @@ function funShowLoading() {
   errorState.classList.add('hidden');
 }
 
-// Show content state
 function funShowContent() {
   loadingSkeleton.classList.add('hidden');
   teamsContent.classList.remove('hidden');
@@ -668,7 +632,6 @@ function funShowContent() {
   errorState.classList.add('hidden');
 }
 
-// Show empty state
 function funShowEmpty() {
   loadingSkeleton.classList.add('hidden');
   teamsContent.classList.add('hidden');
@@ -676,7 +639,6 @@ function funShowEmpty() {
   errorState.classList.add('hidden');
 }
 
-// Show error state
 function funShowError() {
   loadingSkeleton.classList.add('hidden');
   teamsContent.classList.add('hidden');
@@ -684,14 +646,21 @@ function funShowError() {
   errorState.classList.remove('hidden');
 }
 
-// Main data loading function
+// --- MAIN LOAD FUNCTION ---
 async function funInitialLoad(forceRefresh = false) {
+  // 1. Abort any previous on-going load
+  if (globalLoadController) {
+    globalLoadController.abort();
+  }
+  globalLoadController = new AbortController();
+  const signal = globalLoadController.signal;
+
   try {
     if (!forceRefresh) {
       funShowLoading();
     }
 
-    // Load all data concurrently but limited
+    // 2. Load all data concurrently
     const [teamsData, rolesData, membersData, teamMembersData, memberRolesData, counts] = await Promise.all([
       withLimit(() => funLoadTeams()),
       withLimit(() => funLoadRoles()),
@@ -701,10 +670,11 @@ async function funInitialLoad(forceRefresh = false) {
       withLimit(() => funLoadCounts())
     ]);
 
-    // Check if any requests were aborted
-    if (!teamsData || !rolesData || !membersData || !teamMembersData || !memberRolesData || !counts) {
-      return; // Request was aborted
-    }
+    // 3. Check if we have been aborted during the fetch
+    if (signal.aborted) return;
+
+    // Check for critical data failures (optional, as getDocs usually throws or returns empty)
+    if (!teamsData) throw new Error("Failed to load teams");
 
     // Update global state
     teams = teamsData;
@@ -713,11 +683,12 @@ async function funInitialLoad(forceRefresh = false) {
     teamMembers = teamMembersData;
     memberRoles = memberRolesData;
 
-    // Update statistics
     funUpdateStats(counts);
 
     // Process data
     await yieldToFrame();
+    if (signal.aborted) return;
+    
     const processedTeams = await funProcessTeamData();
 
     if (processedTeams.length === 0) {
@@ -727,9 +698,10 @@ async function funInitialLoad(forceRefresh = false) {
 
     // Render teams
     await yieldToFrame();
+    if (signal.aborted) return;
+
     teamsContent.innerHTML = processedTeams.map(team => funRenderTeamCard(team)).join('');
     
-    // Re-initialize icons for newly rendered content
     if (typeof lucide !== 'undefined') {
       lucide.createIcons();
     }
@@ -741,6 +713,9 @@ async function funInitialLoad(forceRefresh = false) {
     }
 
   } catch (error) {
+    // Ignore errors from aborted requests
+    if (signal.aborted) return;
+
     console.error('Error loading teams data:', error);
     funShowError();
     if (!forceRefresh) {
@@ -764,8 +739,6 @@ onAuthStateChanged(auth, (user) => {
     window.location.href = 'auth.html?redirect=' + encodeURIComponent(window.location.pathname);
     return;
   }
-  
-  // Initialize page load
   funInitialLoad(false);
 });
 </script>
